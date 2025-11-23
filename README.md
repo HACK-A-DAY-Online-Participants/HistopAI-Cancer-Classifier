@@ -49,7 +49,7 @@ Start the Streamlit application:
 python3 -m streamlit run app.py
 
 
-🛠️ Key Technical Components
+Key Technical Components
 
 Component
 
