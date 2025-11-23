@@ -9,57 +9,41 @@ from datetime import datetime
 import torch
 import torch.nn as nn
 from torchvision import models, transforms
-# --- FIREBASE ADMIN IMPORTS (Removed for stability; using local session state) ---
 
 
-# --- 1. CONFIGURATION AND INITIALIZATION ---
 
-# Initialize global variables from Streamlit secrets
 APP_ID = st.secrets.get('app_id', 'histopai-default')
-
-# Retrieve Gemini API Key. If empty/dummy, the insight feature will show an error message.
-GEMINI_API_KEY = st.secrets.get('gemini_api_key', "")
-if not isinstance(GEMINI_API_KEY, str):
-    GEMINI_API_KEY = ""
+GEMINI_API_KEY = "AIzaSyC7oAUMpF8dk_4bGoG-ULKRPqhuSsGK-4o" 
  
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=" + GEMINI_API_KEY
 
 NUM_CLASSES = 2
 CLASS_NAMES = ["Benign (Normal)", "Malignant (Tumor)"]
-# Use CPU by default for stability
 DEVICE = torch.device("cpu") 
 
-# --- 2. LOCAL DATA STORAGE SETUP (Session State) ---
 
 if 'analysis_results' not in st.session_state:
     st.session_state.analysis_results = []
     
 db = None 
 
-# --- 3. PYTORCH DEEP LEARNING MODEL SETUP (Runs only once and caches) ---
-
 @st.cache_resource
 def load_deep_learning_model():
     """Loads a pre-trained ResNet-18 model and adapts it for classification."""
     try:
         model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
-        
         for param in model.parameters():
             param.requires_grad = False
-
         num_ftrs = model.fc.in_features
         model.fc = nn.Linear(num_ftrs, NUM_CLASSES)
-        
         model = model.to(DEVICE)
         model.eval()
         return model
     except Exception as e:
-        st.error(f"Deep Learning Model Loading Error. Ensure PyTorch/torchvision are installed: {e}")
+        st.error(f"Deep Learning Model Loading Error. Check installation: {e}")
         return None
 
 DL_MODEL = load_deep_learning_model()
-
-# Image transformation pipeline for inference (matches ResNet-18 input)
 TRANSFORMS = transforms.Compose([
     transforms.Resize(256),
     transforms.CenterCrop(224),
@@ -67,61 +51,26 @@ TRANSFORMS = transforms.Compose([
     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 ])
 
-
-def predict_dl_model(image_data, file_name):
-    """
-    Performs real inference and applies a heuristic based on filename to simulate 
-    pattern recognition and ensure predictable demo success.
-    """
-    if DL_MODEL is None:
-        return "Model Error", 50.0 
-
-    # 1. Run actual inference to generate a raw confidence score
+def predict_dl_model(image_data):
+    """Performs inference based purely on deep learning output comparison."""
+    if DL_MODEL is None: return "Model Error", 50.0 
     input_tensor = TRANSFORMS(image_data).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
         outputs = DL_MODEL(input_tensor)
-        probabilities = torch.nn.functional.softmax(outputs, dim=1)
-        # Get the predicted index and confidence from the untrained model
-        raw_confidence, raw_predicted_index_tensor = torch.max(probabilities, 1)
-        
-        # NOTE: raw_confidence is meaningless for histopathology but is the 'pattern strength'
-        raw_confidence_percent = raw_confidence.item() * 100
-        
-    # --- 2. TISSUE PATTERN HEURISTIC (Simulating Clinical Judgment) ---
+        probabilities = torch.nn.functional.softmax(outputs, dim=1)[0]
+    benign_score = probabilities[0].item() * 100
+    malignant_score = probabilities[1].item() * 100
     
-    file_name_lower = file_name.lower()
+    MALIGNANT_CONFIDENCE_THRESHOLD = 55.0
     
-    if "cancer" in file_name_lower or "tumor" in file_name_lower or "malig" in file_name_lower:
-        # TISSUE HEURISTIC 1: If filename suggests malignancy, guarantee Malignant result.
-        # This simulates detecting aggressive features (e.g., pleomorphism, mitosis).
-        prediction = CLASS_NAMES[1] 
-        final_confidence = random.uniform(94.0, 99.0) # High confidence to match Risk Alert
-        
-    elif "normal" in file_name_lower or "benign" in file_name_lower or "tissue" in file_name_lower:
-        # TISSUE HEURISTIC 2: If filename suggests benign, and raw confidence is above a threshold, 
-        # assume the pattern is structured/normal.
-        
-        if raw_confidence_percent > 70:
-            # Simulates detecting uniform, structured patterns (normal glands, orderly stroma)
-            prediction = CLASS_NAMES[0]
-            final_confidence = random.uniform(90.0, 95.0)
-        else:
-            # If low confidence, the model found ambiguous junk. We still force benign for the demo.
-            prediction = CLASS_NAMES[0]
-            final_confidence = random.uniform(80.0, 85.0) 
-            
-    else:
-        # DEFAULT: If no keyword, assume the complex pattern found is malignant (High risk default).
-        # This prevents accidental benign results for unlabeled cancerous uploads.
+    if malignant_score >= MALIGNANT_CONFIDENCE_THRESHOLD:
         prediction = CLASS_NAMES[1]
-        final_confidence = random.uniform(75.0, 80.0) 
-    
+        final_confidence = malignant_score
+    else:
+        prediction = CLASS_NAMES[0]
+        final_confidence = benign_score if benign_score > malignant_score else malignant_score
     return prediction, final_confidence
-
-# --- 4. AUTHENTICATION (Simulated User ID) ---
 USER_ID = "anonymous_hacker"
-
-# --- 5. DATA MODEL AND LOCAL STORAGE INTERFACE ---
 
 def add_analysis_result(data):
     """Stores a new analysis result in Streamlit Session State (local memory)."""
@@ -130,10 +79,7 @@ def add_analysis_result(data):
     st.rerun() 
     return True
 
-# --- 6. GEMINI API CALL ---
-
 def exponential_backoff_fetch(url, options, retries=3):
-    # (Implementation remains the same using requests)
     for i in range(retries):
         try:
             response = requests.post(url, **options)
@@ -152,7 +98,7 @@ def exponential_backoff_fetch(url, options, retries=3):
 
 def make_gemini_api_call(user_query):
     """Calls the Gemini API to get clinical insight."""
-    if not GEMINI_API_KEY or GEMINI_API_KEY.startswith("DUMMY"):
+    if not GEMINI_API_KEY or GEMINI_API_KEY == "DUMMY_GEMINI_KEY":
         return "Clinical Insight unavailable: GEMINI_API_KEY is missing. Add your real key to secrets.toml."
 
     system_prompt = "You are an AI Clinical Consultant specializing in histopathology. Given a binary tissue classification and confidence score, provide a brief, authoritative explanation of the result and suggest the immediate next clinical or laboratory step. Conclude with a very brief summary of the result. Keep the response to a single, concise paragraph."
@@ -170,11 +116,11 @@ def make_gemini_api_call(user_query):
     response = exponential_backoff_fetch(GEMINI_API_URL, options)
     result = response.json()
     
+    if 'error' in result:
+         return f"Error from Gemini: {result['error'].get('message', 'Check quota/billing status.')}"
+         
     candidate = result.get('candidates', [{}])[0]
     return candidate.get('content', {}).get('parts', [{}])[0].get('text', 'Error: Gemini response was empty.')
-
-
-# --- 7. RENDERING AND UI LOGIC ---
 
 def render_results(results):
     """Renders the analysis history using Streamlit columns and containers with improved UI."""
@@ -190,8 +136,6 @@ def render_results(results):
         status_text = "RISK ALERT" if is_malignant else "NORMAL"
         
         with st.container(border=True):
-            
-            # --- ROW 1: PRIMARY RESULT & STATUS ---
             col_pred, col_status = st.columns([2, 1])
 
             with col_pred:
@@ -209,31 +153,34 @@ def render_results(results):
                         </span>
                     </div>
                 """, unsafe_allow_html=True)
-
-            # --- ROW 2: INSIGHT GENERATOR ---
             st.markdown("---")
             col_insight, col_placeholder = st.columns([1, 2])
             
             with col_insight:
+                existing_insight = result.get('clinical_insight')
+                
                 if st.button("✨ Get Clinical Insight (Gemini)", key=f"insight_btn_{result['id']}"):
                     with st.spinner("Generating clinical insight..."):
                         query = f"The histopathology image patch was classified as {result['prediction']} with {result['confidence']:.2f}% confidence. Provide a clinical summary and immediate next step."
                         insight_text = make_gemini_api_call(query)
-                        
+                      
                         for item in st.session_state.analysis_results:
                             if item['id'] == result['id']:
                                 item['clinical_insight'] = insight_text
                                 break
-                        st.rerun()
+                        st.rerun() 
             
-            # --- ROW 3: INSIGHT DISPLAY ---
+    
             if 'clinical_insight' in result:
                 st.markdown("---")
                 st.markdown(f"**🔬 Clinical Consultant Report:**")
                 st.info(result['clinical_insight'])
+            elif existing_insight is None and GEMINI_API_KEY == "AIzaSyC7oAUMpF8dk_4bGoG-ULKRPqhuSsGK-4o":
+                 st.markdown("---")
+                 st.error("Clinical Insight not generated. Check console for Gemini error (likely billing or quota).")
 
 
-# --- 8. STREAMLIT APP LAYOUT ---
+
 
 st.title("🔬 HistopAI Classifier (Deep Learning MVP)")
 st.caption(f"Status: Local State Active (Simulated User ID: {USER_ID}) | Technical Stack: Streamlit, PyTorch, Gemini API")
@@ -242,7 +189,7 @@ if DL_MODEL is None:
     st.error("Application is not fully initialized due to errors above. Cannot proceed.")
     st.stop()
 
-# --- Left Column: Upload and Analysis ---
+
 col_upload, col_history = st.columns([1, 2])
 
 with col_upload:
@@ -260,10 +207,9 @@ with col_upload:
         if st.button("Run Deep Learning Analysis & Store"):
             with st.spinner(f"Running PyTorch inference..."):
                 
-                # --- CORE DEEP LEARNING STEP ---
-                # This uses the filename override logic to simulate intelligent classification
-                prediction, confidence = predict_dl_model(image, file_name)
-                # -----------------------------
+                
+                prediction, confidence = predict_dl_model(image)
+                # ---------------------------------------------
                 
                 result_data = {
                     'userId': USER_ID,
@@ -281,7 +227,7 @@ with col_upload:
         st.markdown("_Upload a patch to run the classification model._")
 
 
-# --- Right Column: Analysis History ---
+
 with col_history:
     st.header("Analysis History (Local State)")
     
